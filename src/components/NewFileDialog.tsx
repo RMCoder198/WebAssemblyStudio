@@ -20,25 +20,29 @@
  */
 
 import * as React from "react";
-import { Service } from "../service";
 import * as ReactModal from "react-modal";
 import { Button } from "./shared/Button";
-import { GoGear, GoFile, GoX, Icon } from "./shared/Icons";
+import { GoFile, GoX } from "./shared/Icons";
 import appStore from "../stores/AppStore";
-import { File, FileType, Directory, extensionForFileType, nameForFileType, ModelRef, getIconForFileType } from "../model";
-import { KeyboardEvent, ChangeEvent, ChangeEventHandler } from "react";
+import { File, FileType, Directory, extensionForFileType, nameForFileType, ModelRef, getIconForFileType } from "../models";
+import { ChangeEvent } from "react";
 import { ListBox, ListItem, TextInputBox } from "./Widgets";
+import { validateFileName } from "../util";
 
-export class NewFileDialog extends React.Component<{
+interface NewFileDialogProps {
   isOpen: boolean;
-  directory: ModelRef<Directory>
+  directory: ModelRef<Directory>;
   onCreate: (file: File) => void;
   onCancel: () => void;
-}, {
-    fileType: FileType;
-    description: string;
-    name: string;
-  }> {
+}
+
+interface NewFileDialogState {
+  fileType: FileType;
+  description: string;
+  name: string;
+}
+
+export class NewFileDialog extends React.Component<NewFileDialogProps, NewFileDialogState> {
   constructor(props: any) {
     super(props);
     this.state = {
@@ -50,17 +54,21 @@ export class NewFileDialog extends React.Component<{
   onChangeName = (event: ChangeEvent<any>) => {
     this.setState({ name: event.target.value });
   }
-  nameError() {
+  getNameError() {
     const directory = this.props.directory;
+
     if (this.state.name) {
-      if (!/^[a-z0-9\.\-\_]+$/i.test(this.state.name)) {
-        return "Illegal characters in file name.";
-      } else if (!this.state.name.endsWith(extensionForFileType(this.state.fileType))) {
-        return nameForFileType(this.state.fileType) + " file extension is missing.";
-      } else if (directory && appStore.getImmediateChild(directory, this.state.name)) {
-        return `File '${this.state.name}' already exists.`;
+      const fileNameError: string = validateFileName(this.state.name, this.state.fileType);
+      if (fileNameError) {
+        return fileNameError;
+      }
+
+      const directory = this.props.directory;
+      if (directory && appStore.getImmediateChild(directory, this.state.name)) {
+        return `File '${this.state.name}' already exists`;
       }
     }
+
     return "";
   }
   fileName() {
@@ -117,6 +125,7 @@ export class NewFileDialog extends React.Component<{
                 <ListItem value={FileType.Markdown} label={"Markdown (.md)"} icon={getIconForFileType(FileType.Markdown)} />
                 <ListItem value={FileType.JSON} label={"JSON (.json)"} icon={getIconForFileType(FileType.JSON)} />
                 <ListItem value={FileType.DOT} label={"GraphViz DOT (.dot)"} icon={getIconForFileType(FileType.DOT)} />
+                <ListItem value={FileType.TOML} label={"TOML Document (.toml)"} icon={getIconForFileType(FileType.TOML)} />
               </ListBox>
             </div>
             <div className="new-file-dialog-description">
@@ -125,7 +134,7 @@ export class NewFileDialog extends React.Component<{
           </div>
         </div>
         <div style={{ flex: 1, padding: "8px" }}>
-          <TextInputBox label={"Name: " + (this.props.directory ? appStore.getPath(this.props.directory) + "/" : "")} error={this.nameError()} value={this.state.name} onChange={this.onChangeName}/>
+          <TextInputBox label={"Name: " + (this.props.directory ? appStore.getPath(this.props.directory) + "/" : "")} error={this.getNameError()} value={this.state.name} onChange={this.onChangeName}/>
         </div>
         <div>
           <Button
@@ -140,7 +149,7 @@ export class NewFileDialog extends React.Component<{
             icon={<GoFile />}
             label={this.createButtonLabel()}
             title="Create New File"
-            isDisabled={!this.state.fileType || !this.state.name || !!this.nameError()}
+            isDisabled={!this.state.fileType || !this.state.name || !!this.getNameError()}
             onClick={() => {
               const file = new File(this.fileName(), this.state.fileType);
               return this.props.onCreate && this.props.onCreate(file);

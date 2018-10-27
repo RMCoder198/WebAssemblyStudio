@@ -21,7 +21,7 @@
 
 import * as React from "react";
 import { Split } from "./Split";
-import { Project, mimeTypeForFileType, SandboxRun } from "../model";
+import { Project, mimeTypeForFileType, SandboxRun } from "../models";
 import { logLn } from "../actions/AppActions";
 import appStore from "../stores/AppStore";
 
@@ -55,7 +55,7 @@ export class Sandbox extends React.Component<{}, {}>  {
   componentWillUnmount() {
     Split.onResizeBegin.unregister(this.onResizeBegin);
     Split.onResizeEnd.unregister(this.onResizeEnd);
-    appStore.onSandboxRun.register(this.onSandboxRun);
+    appStore.onSandboxRun.unregister(this.onSandboxRun);
   }
   run(project: Project, src: string) {
     const iframe = document.createElement("iframe");
@@ -85,7 +85,7 @@ export class Sandbox extends React.Component<{}, {}>  {
       error.apply(contentWindow.console, arguments);
     })(contentWindow.console.error);
     // Hijack fetch
-    contentWindow.fetch = (input: string, init?: RequestInit) => {
+    contentWindow.fetch =  async (input: string, init?: RequestInit) => {
       const url = new URL(input, "http://example.org/src/main.html");
       const file = project.getFile(url.pathname.substr(1));
       if (file) {
@@ -99,7 +99,12 @@ export class Sandbox extends React.Component<{}, {}>  {
           })
         );
       }
-      return fetch(input, init);
+      const response = await fetch(input, init);
+      if (response.status === 404) {
+        return Promise.reject(`Failed to fetch: ${response.url}`);
+      } else {
+        return Promise.resolve(response);
+      }
     };
     contentWindow.getFileURL = (path: string) => {
       const file = project.getFile(path);

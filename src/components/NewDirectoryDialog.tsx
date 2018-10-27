@@ -25,7 +25,7 @@ import * as ReactModal from "react-modal";
 import { Button } from "./shared/Button";
 import { GoFile, GoX, Icon } from "./shared/Icons";
 import appStore from "../stores/AppStore";
-import { Directory, ModelRef } from "../model";
+import { Directory, ModelRef } from "../models";
 import { ChangeEvent } from "react";
 import { TextInputBox } from "./Widgets";
 
@@ -79,7 +79,7 @@ export class NewDirectoryDialog extends React.Component<{
           <Button
             icon={<GoX />}
             label="Cancel"
-            title="Create New Directory"
+            title="Cancel"
             onClick={() => {
               this.props.onCancel();
             }}

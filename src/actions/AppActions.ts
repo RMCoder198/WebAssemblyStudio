@@ -20,20 +20,22 @@
  */
 
 import dispatcher from "../dispatcher";
-import { File, Directory, Project, fileTypeForExtension } from "../model";
+import { File, Directory, Project } from "../models";
 import { App } from "../components/App";
 import { Template } from "../components/NewProjectDialog";
 import { View, ViewType } from "../components/editor/View";
 import appStore from "../stores/AppStore";
 import { Service, Language, IFiddleFile } from "../service";
 import Group from "../utils/group";
-import { Gulpy } from "../gulpy";
 import { Errors } from "../errors";
-import { contextify } from "../util";
+import getConfig from "../config";
+import { rewriteHTML, RewriteSourcesContext } from "../utils/rewriteSources";
+import { runTask as runGulpTask, RunTaskExternals } from "../utils/taskRunner";
 
 export enum AppActionType {
   ADD_FILE_TO = "ADD_FILE_TO",
   LOAD_PROJECT = "LOAD_PROJECT",
+  CLEAR_PROJECT_MODIFIED = "CLEAR_PROJECT_MODIFIED",
   INIT_STORE = "INIT_STORE",
   UPDATE_FILE_NAME_AND_DESCRIPTION = "UPDATE_FILE_NAME_AND_DESCRIPTION",
   DELETE_FILE = "DELETE_FILE",
@@ -121,7 +123,9 @@ export interface LogLnAction extends AppAction {
   kind: ("" | "info" | "warn" | "error");
 }
 
-export function logLn(message: string, kind: "" | "info" | "warn" | "error" = "") {
+export type logKind = "" | "info" | "warn" | "error";
+
+export function logLn(message: string, kind: logKind = "") {
   dispatcher.dispatch({
     type: AppActionType.LOG_LN,
     message,
@@ -206,9 +210,9 @@ export interface OpenFilesAction extends AppAction {
   files: string[][];
 }
 
-export async function openProjectFiles(files: IFiddleFile []) {
+export async function openProjectFiles(template: Template) {
   const newProject = new Project();
-  await Service.loadFilesIntoProject(files, newProject);
+  await Service.loadFilesIntoProject(template.files, newProject, template.baseUrl);
   dispatcher.dispatch({
     type: AppActionType.LOAD_PROJECT,
     project: newProject
@@ -218,7 +222,7 @@ export async function openProjectFiles(files: IFiddleFile []) {
   }
 }
 
-export async function saveProject(fiddle: string) {
+export async function saveProject(fiddle: string): Promise<string> {
   logLn("Saving Project ...");
   const tabGroups = appStore.getTabGroups();
   const projectModel = appStore.getProject().getModel();
@@ -227,12 +231,13 @@ export async function saveProject(fiddle: string) {
     return group.views.map((view) => view.file.getPath());
   });
 
-  await Service.saveProject(projectModel, openedFiles, fiddle);
+  const uri = await Service.saveProject(projectModel, openedFiles, fiddle);
   logLn("Saved Project OK");
-}
 
-export async function editInWebAssemblyStudio(fiddle: string) {
-  window.open(`http://webassembly.studio?f=${fiddle}`, "wasm.studio");
+  dispatcher.dispatch({
+    type: AppActionType.CLEAR_PROJECT_MODIFIED,
+  } as AppAction);
+  return uri;
 }
 
 export interface FocusTabGroupAction extends AppAction {
@@ -274,40 +279,15 @@ export interface SandboxRunAction extends AppAction {
   src: string;
 }
 
-export async function runTask(name: string, optional: boolean = false) {
+export async function runTask(
+  name: string,
+  optional: boolean = false,
+  externals: RunTaskExternals = RunTaskExternals.Default
+) {
   // Runs the provided source in our fantasy gulp context
   const run = async (src: string) => {
-    const gulp = new Gulpy();
     const project = appStore.getProject().getModel();
-    contextify(src,
-      // thisArg
-      gulp,
-    {
-      // context for backwards compatibility
-      gulp,
-      Service,
-      project,
-      logLn,
-      fileTypeForExtension
-    }, {
-      // modules
-      "gulp": gulp,
-      "@wasm/studio-utils": {
-        Service,
-        project,
-        logLn,
-        fileTypeForExtension
-      }
-    })();
-    if (gulp.hasTask(name)) {
-      try {
-        await gulp.run(name);
-      } catch (e) {
-        logLn(e.message, "error");
-      }
-    } else if (!optional) {
-      logLn(`Task ${name} is not optional.` , "error");
-    }
+    await runGulpTask(src, name, optional, project, logLn, externals);
   };
   let gulpfile = appStore.getFileByName("gulpfile.js");
   if (gulpfile) {
@@ -328,22 +308,20 @@ export async function runTask(name: string, optional: boolean = false) {
 
 export async function run() {
   const mainFileName = "src/main.html";
-  const file = appStore.getFileByName(mainFileName);
-  let src = appStore.getFileSource(file);
-
-  src = src.replace(/src\s*=\s*"(.+?)"/, (all: string, path?: string) => {
-    const fullPath = new URL(path, "http://example.org/" + mainFileName).pathname;
-    const file = appStore.getFileByName(fullPath.substr(1));
-    if (!file) {
-      logLn(`Cannot find file '${path}' mentioned in ${mainFileName}`);
-      return all;
-    }
-    const src = appStore.getFileBuffer(file).getValue();
-    const blob = new Blob([src], { type: "text/javascript" });
-    return `src="${window.URL.createObjectURL(blob)}"`;
-  });
-
   const projectModel = appStore.getProject().getModel();
+  const context = new RewriteSourcesContext(projectModel);
+  context.logLn = logLn;
+  context.createFile = (src: ArrayBuffer|string, type: string) => {
+    const blob = new Blob([src], { type, });
+    return window.URL.createObjectURL(blob);
+  };
+
+  const src = rewriteHTML(context, mainFileName);
+  if (!src) {
+    logLn(`Cannot translate and open ${mainFileName}`);
+    return;
+  }
+
   dispatcher.dispatch({
     type: AppActionType.SANDBOX_RUN,
     src,
@@ -352,7 +330,7 @@ export async function run() {
 
 export async function build() {
   pushStatus("Building Project");
-  await runTask("default");
+  await runTask("build");
   popStatus();
 }
 

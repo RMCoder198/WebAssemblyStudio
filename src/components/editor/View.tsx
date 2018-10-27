@@ -19,7 +19,7 @@
  * SOFTWARE.
  */
 
-import { File, FileType } from "../../model";
+import { File, FileType } from "../../models";
 
 export enum ViewType {
   Editor,
@@ -37,6 +37,13 @@ export function defaultViewTypeForFileType(type: FileType) {
     default:
       return ViewType.Editor;
   }
+}
+
+export function isViewFileDirty(view: View) {
+  if (!view || !view.file) {
+    return false;
+  }
+  return view.file.isDirty;
 }
 
 export class View {

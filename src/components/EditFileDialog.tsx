@@ -20,14 +20,14 @@
  */
 
 import * as React from "react";
-import { Service } from "../service";
 import * as ReactModal from "react-modal";
 import { Button } from "./shared/Button";
-import { GoGear, GoFile, GoX, Icon, GoPencil } from "./shared/Icons";
+import { GoX, GoPencil } from "./shared/Icons";
 import appStore from "../stores/AppStore";
-import { File, FileType, Directory, extensionForFileType, nameForFileType, ModelRef } from "../model";
-import { KeyboardEvent, ChangeEvent, ChangeEventHandler } from "react";
-import { ListBox, ListItem, TextInputBox, Spacer } from "./Widgets";
+import { File, FileType, Directory, extensionForFileType, nameForFileType, ModelRef } from "../models";
+import { ChangeEvent } from "react";
+import { TextInputBox, Spacer } from "./Widgets";
+import { validateFileName } from "../util";
 
 export interface EditFileDialogProps {
   isOpen: boolean;
@@ -35,16 +35,21 @@ export interface EditFileDialogProps {
   onChange: (name: string, description: string) => void;
   onCancel: () => void;
 }
-export class EditFileDialog extends React.Component<EditFileDialogProps, {
-    description: string;
-    name: string;
-  }> {
+
+interface EditFileDialogState {
+  description: string;
+  name: string;
+  fileType: FileType;
+}
+
+export class EditFileDialog extends React.Component<EditFileDialogProps, EditFileDialogState> {
   constructor(props: EditFileDialogProps) {
     super(props);
-    const { description, name } = props.file.getModel();
+    const { description, name, type: fileType } = props.file.getModel();
     this.state = {
       description,
       name,
+      fileType,
     };
   }
   onChangeName = (event: ChangeEvent<any>) => {
@@ -53,11 +58,17 @@ export class EditFileDialog extends React.Component<EditFileDialogProps, {
   onChangeDescription = (event: ChangeEvent<any>) => {
     this.setState({ description: event.target.value });
   }
-  error() {
+  getNameError() {
+    const fileNameError: string = validateFileName(this.state.name, this.state.fileType);
+    if (fileNameError) {
+      return fileNameError;
+    }
+
     const directory = appStore.getParent(this.props.file);
     const file = appStore.getImmediateChild(directory, this.state.name);
-    if (file && file !== this.props.file) {
-      return `A file with the same name already exists.`;
+
+    if (file && this.props.file !== file) {
+      return `File '${this.state.name}' already exists`;
     }
     return "";
   }
@@ -76,9 +87,9 @@ export class EditFileDialog extends React.Component<EditFileDialogProps, {
           {`Edit ${fileModel instanceof Directory ? "Directory" : "File"} ${fileModel.name}`}
         </div>
         <div style={{ flex: 1, padding: "8px" }}>
-          <TextInputBox label="Name:" error={this.error()} value={this.state.name} onChange={this.onChangeName}/>
+          <TextInputBox label="Name:" error={this.getNameError()} value={this.state.name} onChange={this.onChangeName}/>
           <Spacer height={8}/>
-          <TextInputBox label="Description:" error={this.error()} value={this.state.description} onChange={this.onChangeDescription}/>
+          <TextInputBox label="Description:" value={this.state.description} onChange={this.onChangeDescription}/>
         </div>
         <div>
           <Button
@@ -93,7 +104,7 @@ export class EditFileDialog extends React.Component<EditFileDialogProps, {
             icon={<GoPencil />}
             label="Edit"
             title="Edit"
-            isDisabled={!this.state.name || !!this.error()}
+            isDisabled={!this.state.name || !!this.getNameError()}
             onClick={() => {
               return this.props.onChange && this.props.onChange(this.state.name, this.state.description);
             }}

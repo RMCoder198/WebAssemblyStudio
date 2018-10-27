@@ -4,8 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 "use strict";
 
-import "monaco-editor";
-
 // import WinJS = require('vs/base/common/winjs.base');
 // import Touch = require('vs/base/browser/touch');
 // import Mouse = require('vs/base/browser/mouseEvent');
@@ -42,7 +40,7 @@ export interface GestureEvent {
 }
 
 export interface  DragMouseEvent {
-
+  browserEvent: DragEvent
 }
 
 export interface ITree {
@@ -90,7 +88,7 @@ export interface ITree {
   /**
    * Sets DOM focus on the tree.
    */
-  DOMFocus(): void;
+  domFocus(): void;
 
   /**
    * Returns whether the tree has DOM focus.
@@ -100,7 +98,7 @@ export interface ITree {
   /**
    * Removes DOM focus from the tree.
    */
-  DOMBlur(): void;
+  domBlur(): void;
 
   /**
    * Refreshes an element.
@@ -115,23 +113,10 @@ export interface ITree {
   expand(element: any): monaco.Promise<any>;
 
   /**
-   * Expands several elements.
-   * The returned monaco.Promise returns a boolean array for whether the elements were expanded or not.
-   */
-  expandAll(elements?: any[]): monaco.Promise<any>;
-
-  /**
    * Collapses an element.
    * The returned monaco.Promise returns a boolean for whether the element was collapsed or not.
    */
   collapse(element: any, recursive?: boolean): monaco.Promise<any>;
-
-  /**
-   * Collapses several elements.
-   * Provide no arguments and it will recursively collapse all elements in the tree
-   * The returned monaco.Promise returns a boolean for whether the elements were collapsed or not.
-   */
-  collapseAll(elements?: any[], recursive?: boolean): monaco.Promise<any>;
 
   /**
    * Collapses several elements.
@@ -483,8 +468,8 @@ export interface IAccessibilityProvider {
 
 export /* abstract */ class ContextMenuEvent {
 
-  private _posx: number;
-  private _posy: number;
+  public _posx: number; // HACK(0.14)
+  public _posy: number; // HACK(0.14)
   private _target: HTMLElement;
 
   constructor(posx: number, posy: number, target: HTMLElement) {
@@ -499,14 +484,6 @@ export /* abstract */ class ContextMenuEvent {
 
   public stopPropagation(): void {
   // no-op
-  }
-
-  public get posx(): number {
-  return this._posx;
-  }
-
-  public get posy(): number {
-  return this._posy;
   }
 
   public get target(): HTMLElement {
@@ -614,7 +591,7 @@ export const DRAG_OVER_ACCEPT_BUBBLE_DOWN_COPY = (autoExpand = false) => ({ acce
 
 export interface IDragAndDropData {
   update(event: DragMouseEvent): void;
-  getData(): any;
+  elements: any[];
 }
 
 export interface IDragAndDrop {

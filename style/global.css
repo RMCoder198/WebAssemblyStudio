@@ -41,6 +41,7 @@ body {
   background: var(--grey-1000);
   -ms-overflow-style: -ms-autohiding-scrollbar;
   color: #ffffff;
+  overflow: hidden;
 }
 
 body {
@@ -479,6 +480,7 @@ a {
   line-height: 24px;
   -moz-user-select: none;
   user-select: none;
+  text-decoration: none;
 }
 
 .button.disabled {
@@ -595,10 +597,18 @@ a {
     box-shadow: 1px 2px 10px black;
 }
 
+.toast.error {
+  background-color: darkred;
+}
+
+.toast.warning {
+  background-color: darkorange;
+}
+
 .toast-container {
     position: fixed;
-    bottom: 0;
-    left:0 ;
+    bottom: 32px;
+    left: 0;
     right: 0;
     z-index: 99;
     outline: none;
@@ -682,6 +692,13 @@ a {
 .error{
     font-size:11px;
     color: #ff0000;
+}
+
+#task-runner-content {
+  visibility: hidden;
+  position: fixed;
+  top: 0;
+  left: 0;
 }
 
 .new-file-dialog-description {
@@ -802,6 +819,20 @@ a {
   font-weight: normal;
 }
 
+.md table {
+  /* width: 100%; */
+  border-collapse: collapse;
+  margin: 1.75rem 0;
+}
+
+.md td, .md th {
+  padding-left: 8px;
+}
+
+.md th {
+  font-size: 14px;
+}
+
 .tree-view {
   height: 100%;
   overflow-y: auto;
@@ -875,7 +906,21 @@ a {
   font-size: 10px;
 }
 
+.context-view.monaco-menu-container {
+  max-height: 380px;
+  overflow: scroll;
+  position: fixed;
+}
+
 /* Menu Item Styles */
+
+.action-label::selection {
+  background: none;
+}
+
+.action-label::-moz-selection {
+  background: none;
+}
 
 .action-label.ruler {
   border-top: 1px solid var(--grey-800);
@@ -1003,3 +1048,38 @@ a {
 .binary .byte {
   margin-right: 2px;
 }
+
+.error-dialog-description {
+  flex: 1;
+  height: 256px;
+  padding: 8px 15px;
+  font-size: 12px;
+  overflow: auto;
+}
+
+.error-dialog-stacktrace {
+  padding: 10px 20px;
+  margin-top: 15px;
+  background-color: #3e3e3e;
+}
+
+.error-dialog-stacktrace-line {
+  display: block;
+  font-size: 10px;
+  line-height: 1.5;
+  padding-left: 5px;
+}
+
+.error-dialog-stacktrace-title {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 5px;
+  font-size: 11px;
+}
+
+.error-dialog-error-id {
+  padding: 5px 25px;
+  font-size: 8px;
+  display: block;
+  background-color: #484848;
+ }

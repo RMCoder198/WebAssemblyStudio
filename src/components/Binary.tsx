@@ -20,10 +20,9 @@
  */
 
 import * as React from "react";
-import { Service } from "../service";
 import { View } from "./editor";
 
-const colors = [
+export const colors = [
   "#ead780", "#efb8f6", "#89ee39", "#bbc3fe", "#cbed3a",
   "#d0cdee", "#7aec58", "#f2bcd5", "#35ed72", "#cbd5e7",
   "#e2de49", "#79d8f6", "#f3c63e", "#66e9de", "#bee869",
@@ -45,9 +44,17 @@ function toHex(n: number, width: number) {
   return s;
 }
 
-export class BinaryView extends React.Component<BinaryViewProps> {
+export class BinaryView extends React.Component<BinaryViewProps, {
+  data: ArrayBuffer;
+}> {
+  constructor(props: BinaryViewProps) {
+    super(props);
+    const data = this.props.view.file.getData() as ArrayBuffer;
+    this.state = { data };
+  }
   onDidChangeData = () => {
-    this.forceUpdate();
+    const data = this.props.view.file.getData() as ArrayBuffer;
+    this.setState({ data, });
   }
   componentDidMount() {
     this.props.view.file.onDidChangeData.register(this.onDidChangeData);
@@ -64,7 +71,7 @@ export class BinaryView extends React.Component<BinaryViewProps> {
     }
   }
   render() {
-    const data = new Uint8Array(this.props.view.file.getData() as ArrayBuffer);
+    const data = new Uint8Array(this.state.data);
     const perRow = 16;
     const rowCount = Math.max(1, Math.ceil(data.length / perRow));
     const rows = [];
@@ -75,11 +82,11 @@ export class BinaryView extends React.Component<BinaryViewProps> {
       let str = "";
       for (let j = 0; j < colCount; j++) {
         const b = data[rowOffset + j];
-        cols.push(<span className="byte" style={{color: colors[b & 0x1F]}}>{toHex(b, 2)}</span>);
+        cols.push(<span className="byte" key={"col" + j} style={{color: colors[b & 0x1F]}}>{toHex(b, 2)}</span>);
         str += b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
       }
       rows.push(
-        <div className="row">
+        <div className="row" key={"row" + i}>
           <div>
             <span className="address">{"0x" + toHex(rowOffset, 8)}</span>
             <span className="bytes">{cols}</span>

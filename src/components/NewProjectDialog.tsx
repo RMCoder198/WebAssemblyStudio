@@ -24,20 +24,22 @@ import { Service, IFiddleFile } from "../service";
 import * as ReactModal from "react-modal";
 import { Button } from "./shared/Button";
 import { GoGear, GoFile, GoX, Icon } from "./shared/Icons";
-import { File, FileType, Directory, extensionForFileType, nameForFileType, Project } from "../model";
 import { KeyboardEvent, ChangeEvent, ChangeEventHandler } from "react";
 import { ListBox, ListItem, TextInputBox } from "./Widgets";
 import fetchTemplates from "../utils/fetchTemplates";
+import getConfig from "../config";
 
 export interface Template {
   name: string;
   description: string;
-  files: IFiddleFile [];
+  files: IFiddleFile[];
+  baseUrl: URL;
   icon: string;
 }
 
 export class NewProjectDialog extends React.Component<{
   isOpen: boolean;
+  templatesName: string;
   onCreate: (template: Template) => void;
   onCancel: () => void;
 }, {
@@ -55,40 +57,22 @@ export class NewProjectDialog extends React.Component<{
       templates: []
     };
   }
-  onChangeName = (event: ChangeEvent<any>) => {
-    this.setState({ name: event.target.value });
-  }
-  nameError() {
-    return;
-  }
-
-  createButtonLabel() {
-    return "Create";
-  }
   async componentDidMount() {
-    const json = await fetchTemplates();
-    const templates: Template [] = [];
-    // tslint:disable-next-line:forin
-    for (const key in json) {
-      let name = key;
-      let description = "";
-      let icon = "";
-      const packageFile = json[key].files.find((file: any) => file.name === "package.json");
-      if (packageFile) {
-        const pkg = JSON.parse(packageFile.data);
-        name = pkg.name;
-        description = pkg.description;
-        if (pkg.wasmStudio) {
-          name = pkg.wasmStudio.name || name;
-          description = pkg.wasmStudio.description || description;
-          icon = pkg.wasmStudio.icon || icon;
-        }
-      }
+    const config = await getConfig();
+    const templatesPath = config.templates[this.props.templatesName];
+    const json = await fetchTemplates(templatesPath);
+    const base = new URL(templatesPath, location.href);
+    const templates: Template[] = [];
+    for (const [ key, entry] of Object.entries(json) as any) {
+      const name = entry.name || "";
+      const description = entry.description || "";
+      const icon = entry.icon || "";
       templates.push({
         name,
         description,
         icon,
-        files: json[key].files
+        files: entry.files,
+        baseUrl: new URL(key + "/", base)
       });
     }
 
@@ -150,7 +134,7 @@ export class NewProjectDialog extends React.Component<{
           />
           <Button
             icon={<GoFile />}
-            label={this.createButtonLabel()}
+            label="Create"
             title="Create"
             isDisabled={!this.state.template}
             onClick={() => {

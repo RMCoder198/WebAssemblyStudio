@@ -18,14 +18,14 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
-import { File, Project, Directory, FileType, Problem, isBinaryFileType, fileTypeForExtension, fileTypeFromFileName, IStatusProvider } from "./model";
-import "monaco-editor";
+import { File, Project, Directory, FileType, Problem, isBinaryFileType, fileTypeFromFileName, IStatusProvider } from "./models";
 import { padLeft, padRight, isBranch, toAddress, decodeRestrictedBase64ToBytes, base64EncodeBytes } from "./util";
 import { assert } from "./util";
-import getConfig from "./config";
-import { isZlibData, decompressZlib } from "./utils/zlib";
 import { gaEvent } from "./utils/ga";
+import { WorkerCommand, IWorkerResponse } from "./message";
+import { processJSFile, RewriteSourcesContext } from "./utils/rewriteSources";
+import { getCurrentRunnerInfo } from "./utils/taskRunner";
+import { createCompilerService, Language } from "./compilerServices";
 
 declare var capstone: {
   ARCH_X86: any;
@@ -33,13 +33,8 @@ declare var capstone: {
   Cs: any;
 };
 
-declare var base64js: {
-  toByteArray(base64: string): ArrayBuffer;
-  fromByteArray(base64: ArrayBuffer): string;
-};
-
 declare var Module: ({ }) => any;
-declare var define: any;
+
 declare var showdown: {
   Converter: any;
   setFlavor: Function;
@@ -62,108 +57,52 @@ export interface ILoadFiddleResponse {
   success: boolean;
 }
 
-interface ICreateFiddleResponse {
-  id: string;
-  success: boolean;
+export { Language } from "./compilerServices";
+
+function getProjectFilePath(file: File): string {
+  const project = file.getProject();
+  return file.getPath(project);
 }
 
-export enum Language {
-  C = "c",
-  Cpp = "cpp",
-  Wat = "wat",
-  Wasm = "wasm",
-  Rust = "rust",
-  Cretonne = "cton",
-  x86 = "x86",
-  Json = "json",
-  JavaScript = "javascript",
-  TypeScript = "typescript",
-  Text = "text"
-}
-
-interface IFile {
-  name: string;
-  children: IFile[];
-  type?: string;
-  data?: string;
-  description?: string;
-}
-
-export interface IServiceRequestTask {
-  file: string;
-  name: string;
-  output: string;
-  console: string;
-  success: boolean;
-}
-
-export interface IServiceRequest {
-  success: boolean;
-  tasks: IServiceRequestTask[];
-  output: string;
-}
-
-export enum ServiceTypes {
-  Rustc,
-  Clang,
-  Service
-}
-
-/**
- * Turn blocking operations into promises.
- */
-async function defer(fn: Function): Promise<any> {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      resolve(fn());
-    });
-  });
-}
-
-async function getServiceURL(to: ServiceTypes): Promise<string> {
-  const config = await getConfig();
-  switch (to) {
-    case ServiceTypes.Rustc:
-      return config.rustc;
-    case ServiceTypes.Clang:
-      return config.clang;
-    case ServiceTypes.Service:
-      return config.serviceUrl;
-    default:
-      throw new Error(`Invalid ServiceType: ${to}`);
-  }
-}
-
-class ServiceWorker {
+export class ServiceWorker {
   worker: Worker;
-
-  workerCallbacks: Function [] = [];
+  workerCallbacks: Array<{fn: (data: any) => void, ex: (err: Error) => void}> = [];
   nextId = 0;
-  getNextId() {
+  private getNextId() {
     return String(this.nextId++);
   }
-
   constructor() {
     this.worker = new Worker("dist/worker.bundle.js");
-    this.worker.addEventListener("message", (e) => {
+    this.worker.addEventListener("message", (e: {data: IWorkerResponse}) => {
       if (!e.data.id) {
         return;
       }
-      this.workerCallbacks[e.data.id](e);
+      const cb = this.workerCallbacks[e.data.id];
+      if (e.data.success) {
+        cb.fn(e.data.payload);
+      } else {
+        const error = Object.assign(
+          Object.create(Error.prototype),
+          e.data.payload,
+        );
+        cb.ex(error);
+      }
       this.workerCallbacks[e.data.id] = null;
     });
   }
 
-  setWorkerCallback(id: string, fn: (e: any) => void) {
+  setWorkerCallback(id: string, fn: (e: any) => void, ex?: (e: any) => void) {
     assert(!this.workerCallbacks[id as any]);
-    this.workerCallbacks[id as any] = fn;
+    this.workerCallbacks[id as any] = {fn, ex};
   }
 
-  async postMessage(command: string, payload: any): Promise<any> {
+  async postMessage(command: WorkerCommand, payload: any): Promise<any> {
     return new Promise((resolve, reject) => {
       const id = this.getNextId();
-      this.setWorkerCallback(id, (e) => {
-        resolve(e.data.payload);
+      this.setWorkerCallback(id, (data: any) => {
+        resolve(data);
+      }, (err: Error) => {
+        reject(err);
       });
       this.worker.postMessage({
         id, command, payload
@@ -172,61 +111,44 @@ class ServiceWorker {
   }
 
   async optimizeWasmWithBinaryen(data: ArrayBuffer): Promise<ArrayBuffer> {
-    return await this.postMessage("optimizeWasmWithBinaryen", data);
+    return await this.postMessage(WorkerCommand.OptimizeWasmWithBinaryen, data);
   }
 
   async validateWasmWithBinaryen(data: ArrayBuffer): Promise<number> {
-    return await this.postMessage("validateWasmWithBinaryen", data);
+    return await this.postMessage(WorkerCommand.ValidateWasmWithBinaryen, data);
   }
 
   async createWasmCallGraphWithBinaryen(data: ArrayBuffer): Promise<string> {
-    return await this.postMessage("createWasmCallGraphWithBinaryen", data);
+    return await this.postMessage(WorkerCommand.CreateWasmCallGraphWithBinaryen, data);
   }
 
   async convertWasmToAsmWithBinaryen(data: ArrayBuffer): Promise<string> {
-    return await this.postMessage("convertWasmToAsmWithBinaryen", data);
+    return await this.postMessage(WorkerCommand.ConvertWasmToAsmWithBinaryen, data);
   }
 
   async disassembleWasmWithBinaryen(data: ArrayBuffer): Promise<string> {
-    return await this.postMessage("disassembleWasmWithBinaryen", data);
+    return await this.postMessage(WorkerCommand.DisassembleWasmWithBinaryen, data);
   }
 
   async assembleWatWithBinaryen(data: string): Promise<ArrayBuffer> {
-    return await this.postMessage("assembleWatWithBinaryen", data);
+    return await this.postMessage(WorkerCommand.AssembleWatWithBinaryen, data);
   }
 
   async disassembleWasmWithWabt(data: ArrayBuffer): Promise<string> {
-    return await this.postMessage("disassembleWasmWithWabt", data);
+    return await this.postMessage(WorkerCommand.DisassembleWasmWithWabt, data);
   }
 
   async assembleWatWithWabt(data: string): Promise<ArrayBuffer> {
-    return await this.postMessage("assembleWatWithWabt", data);
+    return await this.postMessage(WorkerCommand.AssembleWatWithWabt, data);
+  }
+
+  async twiggyWasm(data: ArrayBuffer): Promise<string> {
+    return await this.postMessage(WorkerCommand.TwiggyWasm, data);
   }
 }
 
 export class Service {
   private static worker = new ServiceWorker();
-
-  static async sendRequestJSON(content: Object, to: ServiceTypes): Promise<IServiceRequest> {
-    const url = await getServiceURL(to);
-    const response = await fetch(url, {
-      method: "POST",
-      body: JSON.stringify(content),
-      headers: new Headers({ "Content-Type": "application/json" })
-    });
-
-    return response.json();
-  }
-
-  static async sendRequest(content: string, to: ServiceTypes): Promise<IServiceRequest> {
-    const url = await getServiceURL(to);
-    const response = await fetch(url, {
-      method: "POST",
-      body: content,
-      headers: new Headers({ "Content-Type": "application/x-www-form-urlencoded" })
-    });
-    return response.json();
-  }
 
   static getMarkers(response: string): monaco.editor.IMarkerData[] {
     // Parse and annotate errors if compilation fails.
@@ -242,15 +164,16 @@ export class Service {
         const startLineNumber = parseInt(m[1], 10);
         const startColumn = parseInt(m[2], 10);
         const message = m[3];
-        let severity = monaco.Severity.Info;
+        let severity = monaco.MarkerSeverity.Info;
         if (message.indexOf("error") >= 0) {
-          severity = monaco.Severity.Error;
+          severity = monaco.MarkerSeverity.Error;
         } else if (message.indexOf("warning") >= 0) {
-          severity = monaco.Severity.Warning;
+          severity = monaco.MarkerSeverity.Warning;
         }
         annotations.push({
           severity, message,
-          startLineNumber: startLineNumber, startColumn: startColumn,
+          startLineNumber: startLineNumber,
+          startColumn: startColumn,
           endLineNumber: startLineNumber, endColumn: startColumn
         });
       }
@@ -262,11 +185,11 @@ export class Service {
           re2.lastIndex++;
         }
         const message = m[5];
-        let severity = monaco.Severity.Info;
+        let severity = monaco.MarkerSeverity.Info;
         if (message.indexOf("error") >= 0) {
-          severity = monaco.Severity.Error;
+          severity = monaco.MarkerSeverity.Error;
         } else if (message.indexOf("warning") >= 0) {
-          severity = monaco.Severity.Warning;
+          severity = monaco.MarkerSeverity.Warning;
         }
         annotations.push({
           severity, message,
@@ -278,52 +201,85 @@ export class Service {
     return annotations;
   }
 
-  static async compileFile(file: File, from: Language, to: Language, options = ""): Promise<any> {
-    const result = await Service.compile(file.getData(), from, to, options);
-    if (result.tasks) {
-      const markers = Service.getMarkers(result.tasks[0].console);
-      if (markers.length) {
+  static async compileFiles(files: File[], from: Language, to: Language, options = ""): Promise<{ [name: string]: (string|ArrayBuffer); }> {
+    gaEvent("compile", "Service", `${from}->${to}`);
+
+    const service = await createCompilerService(from, to);
+
+    const fileNameMap: {[name: string]: File} = files.reduce((acc: any, f: File) => {
+      acc[getProjectFilePath(f)] = f;
+      return acc;
+    }, {} as any);
+
+    const input = {
+      files: files.reduce((acc: any, f: File) => {
+        acc[getProjectFilePath(f)] = {
+          content: f.getData(),
+        };
+        return acc;
+      }, {} as any),
+      options,
+    };
+    const result = await service.compile(input);
+
+    for (const file of files) {
+      file.setProblems([]);
+    }
+
+    for (const [ name, item ] of Object.entries(result.items)) {
+      const { fileRef, console } = item;
+      if (!fileRef || !console) {
+        continue;
+      }
+      const file = fileNameMap[fileRef];
+      if (!file) {
+        continue;
+      }
+      const markers = Service.getMarkers(console);
+      if (markers.length > 0) {
         monaco.editor.setModelMarkers(file.buffer, "compiler", markers);
         file.setProblems(markers.map(marker => {
           return Problem.fromMarker(file, marker);
         }));
-      } else {
-        file.setProblems([]);
       }
     }
+
     if (!result.success) {
-      throw new Error((result as any).message);
+      throw new Error(result.console);
     }
-    let data = decodeRestrictedBase64ToBytes(result.output);
-    if (isZlibData(data)) {
-      data = await decompressZlib(data);
+
+    const outputFiles: any = {};
+    for (const [ name, item ] of Object.entries(result.items)) {
+      const { content } = item;
+      if (content) {
+        outputFiles[name] = content;
+      }
     }
-    return data;
+    return outputFiles;
   }
 
-  static async compile(src: string | ArrayBuffer, from: Language, to: Language, options = ""): Promise<IServiceRequest> {
-    gaEvent("compile", "Service", `${from}->${to}` );
-    if ((from === Language.C || from === Language.Cpp) && to === Language.Wasm) {
-      const project = {
-        output: "wasm",
-        compress: true,
-        files: [
-          {
-            type: from,
-            name: "file." + from,
-            options,
-            src
-          }
-        ]
-      };
-      return this.sendRequestJSON(project, ServiceTypes.Clang);
-    } else if (from === Language.Wasm && to === Language.x86) {
-      const input = encodeURIComponent(base64js.fromByteArray(src as ArrayBuffer));
-      return this.sendRequest("input=" + input + "&action=wasm2assembly&options=" + encodeURIComponent(options), ServiceTypes.Service);
-    } else if (from === Language.Rust && to === Language.Wasm) {
-      // TODO: Temporary until we integrate rustc into the service.
-      return this.sendRequestJSON({ code: src }, ServiceTypes.Rustc);
+  static async compileFile(file: File, from: Language, to: Language, options = ""): Promise<any> {
+    const result = await Service.compileFileWithBindings(file, from, to, options);
+    return result.wasm;
+  }
+
+  static async compileFileWithBindings(file: File, from: Language, to: Language, options = ""): Promise<any> {
+    if (to !== Language.Wasm) {
+      throw new Error(`Only wasm target is supported, but "${to}" was found`);
     }
+    const result = await Service.compileFiles([file], from, to, options);
+    const expectedOutputFilename = "a.wasm";
+    let output: any = {
+      wasm: result[expectedOutputFilename],
+    };
+    const expectedWasmBindgenJsFilename = "wasm_bindgen.js";
+    if (result[expectedWasmBindgenJsFilename]) {
+      output = {
+        ...output,
+        wasmBindgenJs: result[expectedWasmBindgenJsFilename],
+      };
+    }
+    return output;
   }
 
   static async disassembleWasm(buffer: ArrayBuffer, status: IStatusProvider): Promise<string> {
@@ -344,8 +300,14 @@ export class Service {
   static async assembleWat(wat: string, status?: IStatusProvider): Promise<ArrayBuffer> {
     gaEvent("assemble", "Service", "wabt");
     status && status.push("Assembling Wat with Wabt");
-    const result = await this.worker.assembleWatWithWabt(wat);
-    status && status.pop();
+    let result = null;
+    try {
+      result = await this.worker.assembleWatWithWabt(wat);
+    } catch (e) {
+      throw e;
+    } finally {
+      status && status.pop();
+    }
     return result;
   }
 
@@ -412,7 +374,7 @@ export class Service {
       }
     }
     serialize(content);
-    const json: any = { description: "source: http://webassembly.studio", public: true, files};
+    const json: any = { description: "source: https://webassembly.studio", public: true, files};
     if (uri !== undefined) {
       json["description"] = json["description"] + `/?f=${uri}`;
     }
@@ -443,18 +405,27 @@ export class Service {
     }, uri);
   }
 
-  static async loadFilesIntoProject(files: IFiddleFile [], project: Project, basePath: string = ""): Promise<any> {
-    files.forEach(async f => {
+  static async loadFilesIntoProject(files: IFiddleFile[], project: Project, base: URL = null): Promise<any> {
+    for (const f of files) {
       const type = fileTypeFromFileName(f.name);
       const file = project.newFile(f.name, type, false);
       let data: string | ArrayBuffer;
-      if (f.type === "binary") {
-        data = decodeRestrictedBase64ToBytes(f.data).buffer as ArrayBuffer;
+      if (f.data) {
+        if (f.type === "binary") {
+          data = decodeRestrictedBase64ToBytes(f.data).buffer as ArrayBuffer;
+        } else {
+          data = f.data;
+        }
       } else {
-        data = f.data;
+        const request = await fetch(new URL(f.name, base).toString());
+        if (f.type === "binary") {
+          data = await request.arrayBuffer();
+        } else {
+          data = await request.text();
+        }
       }
       file.setData(data);
-    });
+    }
   }
 
   static lazyLoad(uri: string, status?: IStatusProvider): Promise<any> {
@@ -486,13 +457,13 @@ export class Service {
     file.buffer.setValue(await Service.disassembleWasm(data, status));
   }
 
-  static async validateWasmWithBinaryen(file: File, status?: IStatusProvider) {
+  static async validateWasmWithBinaryen(file: File, status?: IStatusProvider): Promise<boolean> {
     gaEvent("validate", "Service", "binaryen");
     const data = file.getData() as ArrayBuffer;
     status && status.push("Validating with Binaryen");
     const result = await this.worker.validateWasmWithBinaryen(data);
     status && status.pop();
-    alert(result ? "Module is valid" : "Module is not valid");
+    return !!result;
   }
 
   static async getWasmCallGraphWithBinaryen(file: File, status?: IStatusProvider) {
@@ -520,7 +491,7 @@ export class Service {
   static async convertWasmToAsmWithBinaryen(file: File, status?: IStatusProvider) {
     gaEvent("asm.js", "Service", "binaryen");
     const data = file.getData() as ArrayBuffer;
-    status && status.push("Creating Call Graph with Binaryen");
+    status && status.push("Converting to asm.js with Binaryen");
     const result = await this.worker.convertWasmToAsmWithBinaryen(data);
     status && status.pop();
     const output = file.parent.newFile(file.name + ".asm.js", FileType.JavaScript);
@@ -590,8 +561,17 @@ export class Service {
       return a.map(function(x: any) { return padLeft(Number(x).toString(16), 2, "0"); }).join(" ");
     }
 
-    const data = file.getData() as string;
-    const json: any = await Service.compile(data, Language.Wasm, Language.x86, options);
+    const service = await createCompilerService(Language.Wasm, Language.x86);
+    const input = {
+      files: {
+        "in.wasm": {
+          content: file.getData(),
+        },
+      },
+      options,
+    };
+    const result = await service.compile(input);
+    const json: any = result.items["a.json"].content;
     let s = "";
     const cs = new capstone.Cs(capstone.ARCH_X86, capstone.MODE_64);
     const annotations: any[] = [];
@@ -656,6 +636,33 @@ export class Service {
     window.addEventListener("message", Service.binaryExplorerMessageListener, false);
   }
 
+  static async import(path: string): Promise<any> {
+    const { project, global } = getCurrentRunnerInfo();
+    const context = new RewriteSourcesContext(project);
+    context.logLn = console.log;
+    context.createFile = (src: ArrayBuffer|string, type: string) => {
+      const blob = new global.Blob([src], { type, });
+      return global.URL.createObjectURL(blob);
+    };
+
+    const url = processJSFile(context, path);
+    // Create script tag to load ES module.
+    const script = global.document.createElement("script");
+    script.setAttribute("type", "module");
+    script.setAttribute("async", "async");
+    const id = `__import__${Math.random().toString(36).substr(2)}`;
+    const scriptReady = new Promise((resolve, reject) => {
+      global[id] = resolve;
+    });
+    script.textContent = `import * as i from '${url}'; ${id}(i);`;
+    global.document.head.appendChild(script);
+    const module = await scriptReady;
+    // Module loaded -- cleaning up
+    script.remove();
+    delete global[id];
+    return module;
+  }
+
   static async compileMarkdownToHtml(src: string): Promise<string> {
     if (typeof showdown === "undefined") {
       await Service.lazyLoad("lib/showdown.min.js");
@@ -663,5 +670,17 @@ export class Service {
     const converter = new showdown.Converter({ tables: true, ghCodeBlocks: true });
     showdown.setFlavor("github");
     return converter.makeHtml(src);
+  }
+
+  static async twiggyWasm(file: File, status: IStatusProvider): Promise<string> {
+    const buffer = file.getData() as ArrayBuffer;
+    gaEvent("disassemble", "Service", "twiggy");
+    status && status.push("Analyze with Twiggy");
+    const result = await this.worker.twiggyWasm(buffer);
+    const output = file.parent.newFile(file.name + ".md", FileType.Markdown);
+    output.description = "Analyzed " + file.name + " using Twiggy.";
+    output.setData(result);
+    status && status.pop();
+    return result;
   }
 }

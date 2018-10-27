@@ -28,7 +28,7 @@ import { EditorView, ViewTabs, View, Tab, Tabs } from "./editor";
 import { Header } from "./Header";
 import { Toolbar } from "./Toolbar";
 import { ViewType, defaultViewTypeForFileType } from "./editor/View";
-import { build, run, runTask, editInWebAssemblyStudio, openFiles, pushStatus, popStatus } from "../actions/AppActions";
+import { build, run, runTask, openFiles, pushStatus, popStatus } from "../actions/AppActions";
 
 import appStore from "../stores/AppStore";
 import {
@@ -48,16 +48,15 @@ import {
   setViewType,
   logLn,
 } from "../actions/AppActions";
-import { Project, File, FileType, Directory, shallowCompare, ModelRef, fileTypeForExtension } from "../model";
+import { Project, File, FileType, Directory, ModelRef } from "../models";
 import { Service, Language } from "../service";
 import { Split, SplitOrientation, SplitInfo } from "./Split";
 
-import { layout, assert } from "../util";
-import registerLanguages from "../utils/registerLanguages";
+import { layout, assert, resetDOMSelection } from "../util";
 
 import * as Mousetrap from "mousetrap";
 import { Sandbox } from "./Sandbox";
-import { Gulpy, testGulpy } from "../gulpy";
+import { Gulpy } from "../gulpy";
 import {
   GoDelete,
   GoPencil,
@@ -72,10 +71,11 @@ import {
   GoRepoForked,
   GoRocket,
   GoBeaker,
+  GoBeakerGear,
   GoThreeBars,
   GoGist,
   GoOpenIssue,
-  GoQuestion
+  GoQuestion,
 } from "./shared/Icons";
 import { Button } from "./shared/Button";
 
@@ -91,6 +91,8 @@ import { Errors } from "../errors";
 import { ControlCenter } from "./ControlCenter";
 import Group from "../utils/group";
 import { StatusBar } from "./StatusBar";
+import { publishArc, notifyArcAboutFork } from "../actions/ArcActions";
+import { RunTaskExternals } from "../utils/taskRunner";
 
 export interface AppState {
   project: ModelRef<Project>;
@@ -142,15 +144,36 @@ export interface AppState {
   newDirectoryDialog: ModelRef<Directory>;
   showProblems: boolean;
   showSandbox: boolean;
+  tabGroups: Group[];
+  activeTabGroup: Group;
+  hasStatus: boolean;
+  isContentModified: boolean;
+  windowDimensions: string;
 }
 
 export interface AppProps {
-  embed: boolean;
   /**
    * If true, the Update button is visible.
    */
   update: boolean;
   fiddle: string;
+  embeddingParams: EmbeddingParams;
+  windowContext: AppWindowContext;
+}
+
+export enum EmbeddingType {
+  None,
+  Default,
+  Arc
+}
+
+export interface EmbeddingParams {
+  type: EmbeddingType;
+  templatesName: string;
+}
+
+export interface AppWindowContext {
+  promptWhenClosing: boolean;
 }
 
 export class App extends React.Component<AppProps, AppState> {
@@ -182,55 +205,75 @@ export class App extends React.Component<AppProps, AppState> {
       ],
       editorSplits: [],
       showProblems: true,
-      showSandbox: true,
+      showSandbox: props.embeddingParams.type !== EmbeddingType.Arc,
       uploadFileDialogDirectory: null,
-      newDirectoryDialog: null
+      newDirectoryDialog: null,
+      tabGroups: null,
+      activeTabGroup: null,
+      windowDimensions: App.getWindowDimensions(),
+      hasStatus: false,
+      isContentModified: false,
     };
-    registerLanguages();
   }
   private async initializeProject() {
     initStore();
-    this.setState({ project: appStore.getProject() });
+    this.setState({
+      project: appStore.getProject(),
+      tabGroups: appStore.getTabGroups(),
+      activeTabGroup: appStore.getActiveTabGroup(),
+      hasStatus: appStore.hasStatus(),
+    });
     this.bindAppStoreEvents();
     if (this.state.fiddle) {
       this.loadProjectFromFiddle(this.state.fiddle);
     }
+  }
+  private static getWindowDimensions(): string {
+    return `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
   }
   private async loadProjectFromFiddle(uri: string) {
     const project = new Project();
     pushStatus("Downloading Project");
     const fiddle = await Service.loadJSON(uri);
     popStatus();
-    await Service.loadFilesIntoProject(fiddle.files, project);
-    loadProject(project);
-    if (project.getFile("README.md")) {
-      openFiles([["README.md"]]);
+    if (fiddle.success) {
+      await Service.loadFilesIntoProject(fiddle.files, project);
+      loadProject(project);
+      if (project.getFile("README.md")) {
+        openFiles([["README.md"]]);
+      }
+    } else {
+      if (this.toastContainer) {
+        this.toastContainer.showToast(<span>Project {uri} was not found.</span>, "error");
+      }
     }
   }
   bindAppStoreEvents() {
     appStore.onLoadProject.register(() => {
       this.setState({ project: appStore.getProject() });
-      this.forceUpdate();
-      runTask("project:load", true);
-    });
-    appStore.onDidChangeBuffer.register(() => {
-      this.forceUpdate();
-    });
-    appStore.onDidChangeData.register(() => {
-      this.forceUpdate();
-    });
-    appStore.onDidChangeChildren.register(() => {
-      this.forceUpdate();
+      runTask("project:load", true, RunTaskExternals.Setup);
     });
     appStore.onDirtyFileUsed.register((file: File) => {
       this.logLn(`Changes in ${file.getPath()} were ignored, save your changes.`, "warn");
     });
     appStore.onTabsChange.register(() => {
-      this.forceUpdate();
+      this.setState({
+        tabGroups: appStore.getTabGroups(),
+        activeTabGroup: appStore.getActiveTabGroup(),
+      });
       layout();
     });
     appStore.onDidChangeStatus.register(() => {
-      this.forceUpdate();
+      this.setState({
+        hasStatus: appStore.hasStatus(),
+      });
+    });
+    appStore.onDidChangeIsContentModified.register(() => {
+      this.props.windowContext.promptWhenClosing = appStore.getIsContentModified();
+
+      this.setState({
+        isContentModified: appStore.getIsContentModified(),
+      });
     });
   }
 
@@ -259,12 +302,31 @@ export class App extends React.Component<AppProps, AppState> {
     openFile(help, defaultViewTypeForFileType(help.type));
   }
 
+  private publishArc(): Promise<void> {
+    if (this.state.isContentModified) {
+      return this.fork().then(publishArc);
+    } else {
+      return publishArc();
+    }
+  }
+
   registerShortcuts() {
     Mousetrap.bind("command+b", () => {
       build();
     });
     Mousetrap.bind("command+enter", () => {
-      run();
+      if (this.props.embeddingParams.type !== EmbeddingType.Arc) {
+        run();
+      } else {
+        this.publishArc();
+      }
+    });
+    Mousetrap.bind("command+alt+enter", () => {
+      if (this.props.embeddingParams.type !== EmbeddingType.Arc) {
+        build().then(run);
+      } else {
+        build().then(() => this.publishArc());
+      }
     });
   }
   logLn(message: string, kind: "" | "info" | "warn" | "error" = "") {
@@ -276,13 +338,18 @@ export class App extends React.Component<AppProps, AppState> {
   componentDidMount() {
     layout();
     this.registerShortcuts();
-    // if (!this.props.embed) {
-    //   this.loadReleaseNotes();
-    // }
     window.addEventListener("resize", () => {
-      console.log("App.forceUpdate because of window resize.");
-      this.forceUpdate();
+      this.setState({
+        windowDimensions: App.getWindowDimensions(),
+      });
     }, false);
+    if (this.props.embeddingParams.type === EmbeddingType.Arc) {
+      window.addEventListener("message", (e) => {
+        if (typeof e.data === "object" && e.data !== null && e.data.type === "arc/fork") {
+          this.fork();
+        }
+      });
+    }
   }
 
   share() {
@@ -293,18 +360,21 @@ export class App extends React.Component<AppProps, AppState> {
     saveProject(this.state.fiddle);
   }
   async fork() {
-    const projectModel = this.state.project.getModel();
     pushStatus("Forking Project");
-    const fiddle = await Service.saveProject(projectModel, []);
+    const fiddle = await saveProject("");
     popStatus();
     const search = window.location.search;
     if (this.state.fiddle) {
       assert(search.indexOf(this.state.fiddle) >= 0);
       history.replaceState({}, fiddle, search.replace(this.state.fiddle, fiddle));
     } else {
-      history.pushState({}, fiddle, `?f=${fiddle}`);
+      const prefix = search ? search + "&" : "?";
+      history.pushState({}, fiddle, `${prefix}f=${fiddle}`);
     }
     this.setState({ fiddle });
+    if (this.props.embeddingParams.type === EmbeddingType.Arc) {
+      notifyArcAboutFork(fiddle);
+    }
   }
   async gist(fileOrDirectory?: File) {
     pushStatus("Exporting Project");
@@ -333,13 +403,13 @@ export class App extends React.Component<AppProps, AppState> {
   private workspaceSplit: SplitInfo = null;
 
   toolbarButtonsAreDisabled() {
-    return this.state.project.getModel().hasStatus();
+    return this.state.hasStatus;
   }
 
   makeToolbarButtons() {
     const toolbarButtons = [
       <Button
-        key="View Workspace"
+        key="ViewWorkspace"
         icon={<GoThreeBars />}
         title="View Project Workspace"
         onClick={() => {
@@ -358,33 +428,39 @@ export class App extends React.Component<AppProps, AppState> {
         }}
       />
     ];
-    if (this.props.embed) {
+    if (this.props.embeddingParams.type === EmbeddingType.Default) {
       toolbarButtons.push(
         <Button
+          key="EditInWebAssemblyStudio"
           icon={<GoPencil />}
           label="Edit in WebAssembly Studio"
           title="Edit Project in WebAssembly Studio"
-          onClick={() => {
-            assert(this.state.fiddle);
-            editInWebAssemblyStudio(this.state.fiddle);
-          }}
+          isDisabled={!this.state.fiddle}
+          href={`//webassembly.studio/?f=${this.state.fiddle}`}
+          target="wasm.studio"
+          rel="noopener noreferrer"
         />);
-    } else {
-      if (this.props.update) {
-        toolbarButtons.push(
-          <Button
-            icon={<GoPencil />}
-            label="Update"
-            title="Update Project"
-            isDisabled={this.toolbarButtonsAreDisabled()}
-            onClick={() => {
-              this.update();
-            }}
-          />
-        );
-      }
+    }
+    if (this.props.embeddingParams.type === EmbeddingType.None &&
+        this.props.update) {
       toolbarButtons.push(
         <Button
+          key="UpdateProject"
+          icon={<GoPencil />}
+          label="Update"
+          title="Update Project"
+          isDisabled={this.toolbarButtonsAreDisabled()}
+          onClick={() => {
+            this.update();
+          }}
+        />
+      );
+    }
+    if (this.props.embeddingParams.type === EmbeddingType.None ||
+        this.props.embeddingParams.type === EmbeddingType.Arc) {
+      toolbarButtons.push(
+        <Button
+          key="ForkProject"
           icon={<GoRepoForked />}
           label="Fork"
           title="Fork Project"
@@ -392,8 +468,13 @@ export class App extends React.Component<AppProps, AppState> {
           onClick={() => {
             this.fork();
           }}
-        />,
+        />
+      );
+    }
+    if (this.props.embeddingParams.type === EmbeddingType.None) {
+      toolbarButtons.push(
         <Button
+          key="CreateGist"
           icon={<GoGist />}
           label="Create Gist"
           title="Create GitHub Gist from Project"
@@ -403,6 +484,7 @@ export class App extends React.Component<AppProps, AppState> {
           }}
         />,
         <Button
+          key="Download"
           icon={<GoDesktopDownload />}
           label="Download"
           title="Download Project"
@@ -412,6 +494,7 @@ export class App extends React.Component<AppProps, AppState> {
           }}
         />,
         <Button
+          key="Share"
           icon={<GoRocket />}
           label="Share"
           title={this.state.fiddle ? "Share Project" : "Cannot share a project that has not been forked yet."}
@@ -423,6 +506,7 @@ export class App extends React.Component<AppProps, AppState> {
     }
     toolbarButtons.push(
       <Button
+        key="Build"
         icon={<GoBeaker />}
         label="Build"
         title="Build Project: CtrlCmd + B"
@@ -430,29 +514,71 @@ export class App extends React.Component<AppProps, AppState> {
         onClick={() => {
           build();
         }}
-      />,
-      <Button
-        icon={<GoGear />}
-        label="Run"
-        title="Run Project: CtrlCmd + Enter"
-        isDisabled={this.toolbarButtonsAreDisabled()}
-        onClick={() => {
-          run();
-        }}
-      />
-    );
-    if (!this.props.embed) {
+      />);
+    if (this.props.embeddingParams.type !== EmbeddingType.Arc) {
       toolbarButtons.push(
         <Button
+          key="Run"
+          icon={<GoGear />}
+          label="Run"
+          title="Run Project: CtrlCmd + Enter"
+          isDisabled={this.toolbarButtonsAreDisabled()}
+          onClick={() => {
+            run();
+          }}
+        />,
+        <Button
+          key="BuildAndRun"
+          icon={<GoBeakerGear />}
+          label="Build &amp; Run"
+          title="Build &amp; Run Project: CtrlCmd + Alt + Enter"
+          isDisabled={this.toolbarButtonsAreDisabled()}
+          onClick={() => {
+            build().then(run);
+          }}
+        />
+      );
+    }
+    if (this.props.embeddingParams.type === EmbeddingType.Arc) {
+      toolbarButtons.push(
+        <Button
+          key="Preview"
+          icon={<GoGear />}
+          label="Preview"
+          title="Preview Project: CtrlCmd + Enter"
+          isDisabled={this.toolbarButtonsAreDisabled()}
+          onClick={() => {
+            this.publishArc();
+          }}
+        />
+      );
+      toolbarButtons.push(
+        <Button
+          key="BuildAndPreview"
+          icon={<GoGear />}
+          label="Build &amp; Preview"
+          title="Build &amp; Preview Project: CtrlCmd + Alt + Enter"
+          isDisabled={this.toolbarButtonsAreDisabled()}
+          onClick={() => {
+            build().then(() => this.publishArc());
+          }}
+        />
+      );
+    }
+    if (this.props.embeddingParams.type === EmbeddingType.None) {
+      toolbarButtons.push(
+        <Button
+          key="GithubIssues"
           icon={<GoOpenIssue />}
           label="GitHub Issues"
           title="GitHub Issues"
           customClassName="issue"
-          onClick={() => {
-            window.open("https://github.com/wasdk/WebAssemblyStudio", "_blank");
-          }}
+          href="https://github.com/wasdk/WebAssemblyStudio"
+          target="_blank"
+          rel="noopener noreferrer"
         />,
         <Button
+          key="HelpAndPrivacy"
           icon={<GoQuestion />}
           label="Help & Privacy"
           title="Help & Privacy"
@@ -468,16 +594,17 @@ export class App extends React.Component<AppProps, AppState> {
   render() {
     const self = this;
 
-    function makeEditorPanes(): any {
-      const groups = appStore.getTabGroups();
-      const activeGroup = appStore.getActiveTabGroup();
+    const makeEditorPanes = () => {
+      const groups = this.state.tabGroups;
+      const activeGroup = this.state.activeTabGroup;
 
       if (groups.length === 0) {
         return <div>No Groups</div>;
       }
-      return groups.map(group => {
+      return groups.map((group: Group, i: number) => {
         // tslint:disable-next-line:jsx-key
         return <ViewTabs
+          key={`editorPane${i}`}
           views={group.views.slice(0)}
           view={group.currentView}
           preview={group.preview}
@@ -489,6 +616,10 @@ export class App extends React.Component<AppProps, AppState> {
           }}
           onChangeViewType={(view, type) => setViewType(view, type)}
           onClickView={(view: View) => {
+            if (!(appStore.getActiveTabGroup().currentView === view)) {
+              // Avoids the propagation of content selection between tabs.
+              resetDOMSelection();
+            }
             focusTabGroup(group);
             openView(view);
           }}
@@ -502,7 +633,7 @@ export class App extends React.Component<AppProps, AppState> {
           }}
         />;
       });
-    }
+    };
 
     const editorPanes = <Split
       name="Editors"
@@ -524,11 +655,12 @@ export class App extends React.Component<AppProps, AppState> {
       {this.state.newProjectDialog &&
         <NewProjectDialog
           isOpen={true}
+          templatesName={this.props.embeddingParams.templatesName}
           onCancel={() => {
             this.setState({ newProjectDialog: null });
           }}
           onCreate={async (template: Template) => {
-            await openProjectFiles(template.files);
+            await openProjectFiles(template);
             this.setState({ newProjectDialog: false });
           }}
         />
@@ -577,7 +709,6 @@ export class App extends React.Component<AppProps, AppState> {
             this.setState({ uploadFileDialogDirectory: null });
           }}
           onUpload={(files: File[]) => {
-            // TODO: Handle file collisions.
             files.map((file: File) => {
               addFileTo(file, this.state.uploadFileDialogDirectory.getModel());
             });
@@ -630,6 +761,8 @@ export class App extends React.Component<AppProps, AppState> {
               }
             }}
             onClickFile={(file: File) => {
+              // Avoids the propagation of content selection between tabs.
+              resetDOMSelection();
               openFile(file, defaultViewTypeForFileType(file.type));
             }}
             onDoubleClickFile={(file: File) => {
@@ -667,6 +800,7 @@ export class App extends React.Component<AppProps, AppState> {
               >
                 {editorPanes}
                 <ControlCenter
+                  showSandbox={this.state.showSandbox}
                   onToggle={() => {
                     const splits = this.state.controlCenterSplits;
                     splits[1].value = splits[1].value === 40 ? 256 : 40;
@@ -680,6 +814,7 @@ export class App extends React.Component<AppProps, AppState> {
         </Split>
       </div>
       <StatusBar />
+      <div id="task-runner-content" />
     </div>;
   }
 }

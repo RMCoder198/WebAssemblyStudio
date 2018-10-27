@@ -25,14 +25,14 @@ import { EditorView, View, Tab, Tabs } from "./editor";
 import { Sandbox } from "./Sandbox";
 import { GoThreeBars, GoFile } from "./shared/Icons";
 import { Button } from "./shared/Button";
-import { FileType, getIconForFileType, Problem, ModelRef } from "../model";
-import { Project, File, Directory, shallowCompare } from "../model";
+import { File } from "../models";
 import { Problems } from "./Problems";
 import appStore from "../stores/AppStore";
 import { layout } from "../util";
 
 export class ControlCenter extends React.Component<{
   onToggle?: Function;
+  showSandbox: boolean;
 }, {
     /**
      * Split state.
@@ -43,42 +43,55 @@ export class ControlCenter extends React.Component<{
      * Visible pane.
      */
     visible: "output" | "problems";
+
+    problemCount: number;
+    outputLineCount: number;
   }> {
+  outputView: View;
+  refs: { container: HTMLDivElement };
+  outputViewEditor: EditorView;
+  updateOutputViewTimeout: any;
+
   constructor(props: any) {
     super(props);
+    const outputFile = appStore.getOutput().getModel();
+    this.outputView = new View(outputFile);
+
     this.state = {
       visible: "output",
       splits: [
         { min: 128, value: 512 },
         { min: 128, value: 256 }
-      ]
+      ],
+      problemCount: this.getProblemCount(),
+      outputLineCount: this.getOutputLineCount()
     };
-    const outputFile = appStore.getOutput().getModel();
-    this.outputView = new View(outputFile);
   }
   onOutputChanged = () => {
     this.updateOutputView();
   }
+  onDidChangeProblems = () => {
+    this.updateOutputView();
+  }
   componentDidMount() {
     appStore.onOutputChanged.register(this.onOutputChanged);
+    appStore.onDidChangeProblems.register(this.onDidChangeProblems);
   }
   componentWillUnmount() {
     appStore.onOutputChanged.unregister(this.onOutputChanged);
+    appStore.onDidChangeProblems.unregister(this.onDidChangeProblems);
   }
-  outputView: View;
-  refs: {
-    container: HTMLDivElement;
-  };
-  outputViewEditor: EditorView;
   setOutputViewEditor(editor: EditorView) {
     this.outputViewEditor = editor;
   }
-  updateOutputViewTimeout: any;
   updateOutputView() {
     if (!this.updateOutputViewTimeout) {
       this.updateOutputViewTimeout = window.setTimeout(() => {
-        this.forceUpdate();
         this.updateOutputViewTimeout = null;
+        this.setState({
+          problemCount: this.getProblemCount(),
+          outputLineCount: this.getOutputLineCount()
+        });
       });
     }
     if (!this.outputViewEditor) {
@@ -92,6 +105,7 @@ export class ControlCenter extends React.Component<{
         return <EditorView
           ref={(ref) => this.setOutputViewEditor(ref)}
           view={this.outputView}
+          options={{renderIndentGuides: false}}
         />;
       case "problems":
         return <Problems />;
@@ -99,11 +113,17 @@ export class ControlCenter extends React.Component<{
         return null;
     }
   }
-  render() {
+  getOutputLineCount() {
+    return this.outputView.file.buffer.getLineCount();
+  }
+  getProblemCount() {
     let problemCount = 0;
     appStore.getProject().getModel().forEachFile((file: File) => {
       problemCount += file.problems.length;
     }, false, true);
+    return problemCount;
+  }
+  render() {
     return <div className="fill">
       <div className="tabs" style={{ display: "flex" }}>
         <div>
@@ -118,14 +138,14 @@ export class ControlCenter extends React.Component<{
         <div>
           <Tabs>
             <Tab
-              label={`Output (${this.outputView.file.buffer.getLineCount()})`}
+              label={`Output (${this.state.outputLineCount})`}
               isActive={this.state.visible === "output"}
               onClick={() => {
                 this.setState({ visible: "output" });
               }}
             />
             <Tab
-              label={`Problems (${problemCount})`}
+              label={`Problems (${this.state.problemCount})`}
               isActive={this.state.visible === "problems"}
               onClick={() => {
                 this.setState({ visible: "problems" });
@@ -135,21 +155,23 @@ export class ControlCenter extends React.Component<{
         </div>
       </div>
       <div style={{ height: "calc(100% - 40px)" }}>
-        <Split
-          name="editor/sandbox"
-          orientation={SplitOrientation.Vertical}
-          defaultSplit={{
-            min: 256,
-          }}
-          splits={this.state.splits}
-          onChange={(splits) => {
-            this.setState({ splits });
-            layout();
-          }}
-        >
-          {this.createPane()}
-          <Sandbox />
-        </Split>
+        { this.props.showSandbox ?
+          <Split
+            name="editor/sandbox"
+            orientation={SplitOrientation.Vertical}
+            defaultSplit={{
+              min: 256,
+            }}
+            splits={this.state.splits}
+            onChange={(splits) => {
+              this.setState({ splits });
+              layout();
+            }}
+          >
+            {this.createPane()}
+            <Sandbox />
+          </Split> : this.createPane()
+          }
       </div>
     </div>;
   }

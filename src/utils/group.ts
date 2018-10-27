@@ -21,7 +21,7 @@
 
 import { assert } from "../util";
 import { View, ViewType } from "../components/editor/View";
-import { File } from "../model";
+import { File } from "../models";
 
 export default class Group {
   currentView: View;
@@ -39,7 +39,7 @@ export default class Group {
     if (index >= 0) {
       // Switch to the view if it's already open.
       this.currentView = view;
-      if (!shouldPreview) {
+      if (!shouldPreview && this.preview === view) {
         this.preview = null;
       }
       return;

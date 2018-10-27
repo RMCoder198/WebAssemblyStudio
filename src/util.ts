@@ -19,6 +19,8 @@
  * SOFTWARE.
  */
 
+import { fileTypeForExtension, FileType, fileTypeForMimeType, nameForFileType, extensionForFileType, isBinaryFileType, Directory } from "./models";
+
 export function toAddress(n: number) {
   let s = n.toString(16);
   while (s.length < 6) {
@@ -189,6 +191,10 @@ export function layout() {
   }, layoutThrottleDuration);
 }
 
+export function resetDOMSelection() {
+  window.getSelection().removeAllRanges();
+}
+
 export function assert(c: any, message?: string) {
   if (!c) {
     throw new Error(message);
@@ -199,37 +205,116 @@ export function clamp(x: number, min: number, max: number): number {
   return Math.min(Math.max(min, x), max);
 }
 
-export function contextify(
-  src: string,
-  thisArg: any = window,
-  context: { [key: string]: any } = {},
-  modules: { [key: string]: any } = {}
-): () => any {
-  // Build a require wrapper that looks for provided modules first and falls
-  // back to calling the environment's require otherwise, which supports both
-  // synchronous (CommonJS-style) and asynchronous (AMD-style) arguments.
-  function require(name: string | string[], factory?: any): any {
-    if (typeof name === "string") {
-      if (modules.hasOwnProperty(name)) {
-        return modules[name];
-      }
-      return (window as any).require(name);
+export async function readUploadedFile(inputFile: File, readAs: "text" | "arrayBuffer"): Promise<string | ArrayBuffer> {
+  const temporaryFileReader = new FileReader();
+  return new Promise<string | ArrayBuffer>((resolve, reject) => {
+    temporaryFileReader.onerror = () => {
+      temporaryFileReader.abort();
+      reject(new DOMException("Problem parsing input file."));
+    };
+    temporaryFileReader.onload = () => {
+      resolve(temporaryFileReader.result as any);
+    };
+    if (readAs === "text") {
+      temporaryFileReader.readAsText(inputFile);
+    } else if (readAs === "arrayBuffer") {
+      temporaryFileReader.readAsArrayBuffer(inputFile);
+    } else {
+      assert(false, "NYI");
     }
-    return (window as any).require(name, factory);
-  }
-  Object.defineProperty(require, "config", {
-    value: (window as any).require.config
   });
+}
 
-  // Use provided contextual keys as parameters and wrap the source in an IIFE
-  // so redefining variables using parameter names is allowed...
-  const contextParameters = Object.keys(context)
-    .concat("require", "exports", "return ()=>{" + src + "}");
-  // ...and use provided contextual values as arguments.
-  const contextArguments = Object.values(context)
-    .concat(require, {});
+export async function readUploadedDirectory(inputEntry: any, root: Directory, customRoot?: string) {
+  const reader = inputEntry.createReader();
+  reader.readEntries(((entries: any) => {
+    entries.forEach(async (entry: any) => {
+      if (entry.isDirectory) {
+        return readUploadedDirectory(entry, root, customRoot);
+      }
+      entry.file(async (file: File) => {
+        try {
+          const name: string = file.name;
+          let path: string = entry.fullPath.replace(/^\/+/g, "");
+          if (customRoot) {
+            const pathArray = path.split("/");
+            pathArray[0] = customRoot;
+            path = pathArray.join("/");
+          }
+          const fileType = fileTypeForExtension(name.split(".").pop());
+          const data = await readUploadedFile(file, isBinaryFileType(fileType) ? "arrayBuffer" : "text");
+          const newFile = root.newFile(path, fileType, false, true);
+          newFile.setData(data);
+        } catch (e) {
+          console.log("Unable to read the file!");
+        }
+      });
+    });
+  }));
+}
 
-  // Call the function constructor with our variable parameters and arguments.
-  return Function.apply(null, contextParameters)
-    .apply(thisArg, contextArguments);
+export async function uploadFilesToDirectory(items: any, root: Directory) {
+  Array.from(items).forEach(async (item: any) => {
+    if (typeof item.webkitGetAsEntry === "function") {
+      const entry = item.webkitGetAsEntry();
+      if (entry.isDirectory) {
+        if (root.getImmediateChild(entry.name)) {
+          const customRoot = root.handleNameCollision(entry.name);
+          return readUploadedDirectory(entry, root, customRoot);
+        }
+        return readUploadedDirectory(entry, root);
+      }
+    }
+    let file: File;
+    if (item instanceof DataTransferItem) {
+      file = item.getAsFile();
+    } else {
+      file = item;
+    }
+    const name: string = file.name;
+    const path: string = (file as any).webkitRelativePath || name; // This works in FF also.
+    const fileType = fileTypeForExtension(name.split(".").pop());
+    let data: any;
+    try {
+      data = await readUploadedFile(file, isBinaryFileType(fileType) ? "arrayBuffer" : "text");
+      const newFile = root.newFile(path, fileType, false, true);
+      newFile.setData(data);
+    } catch (e) {
+      console.log("Unable to read the file!");
+    }
+  });
+}
+
+export function isUploadAllowedForMimeType(type: string) {
+  if (type === "") { // Firefox doesn't show the "application/wasm" mime type.
+    return true;
+  }
+  return fileTypeForMimeType(type) !== FileType.Unknown;
+}
+
+let nextKey = 0;
+
+export function getNextKey() {
+  return nextKey++;
+}
+
+export function validateFileName(name: string, sourceType: FileType): string {
+  if (!name) {
+    return "File name can't be empty";
+  }
+
+  if (!/^[a-z0-9\.\-\_]+$/i.test(name)) {
+    return "Illegal characters in file name";
+  }
+
+  const sourceTypeExtension = "." + extensionForFileType(sourceType);
+  if (sourceTypeExtension === name) {
+    return "File name can't be empty";
+  }
+
+  if (!name.endsWith(sourceTypeExtension)) {
+    return `${nameForFileType(sourceType)} file extension is missing or incorrect`;
+  }
+
+  return "";
 }

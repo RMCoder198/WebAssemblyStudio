@@ -20,12 +20,11 @@
  */
 
 import * as React from "react";
-
 import { Header } from "./Header";
 import { DirectoryTree } from "./DirectoryTree";
-import { WorkspaceEntry } from "./WorkspaceEntry";
-import { Project, File, Directory, ModelRef } from "../model";
+import { Project, File, Directory, ModelRef } from "../models";
 import { SplitOrientation, SplitInfo, Split } from "./Split";
+import appStore from "../stores/AppStore";
 
 export interface WorkspaceProps {
   /**
@@ -45,18 +44,28 @@ export interface WorkspaceProps {
   onCreateGist: (fileOrDirectory: File) => void;
 }
 
-export class Workspace extends React.Component<WorkspaceProps, {
-  showProject: boolean;
-  showFiles: boolean;
+export interface WorkSpaceState {
   splits: SplitInfo[];
-}> {
+}
+
+export class Workspace extends React.Component<WorkspaceProps, WorkSpaceState> {
+  directoryTree: DirectoryTree;
   constructor(props: any) {
     super(props);
     this.state = {
-      showProject: false,
-      showFiles: true,
       splits: []
     };
+  }
+  componentDidMount() {
+    appStore.onDidChangeDirty.register(this.refreshTree);
+    appStore.onDidChangeChildren.register(this.refreshTree);
+  }
+  componentWillUnmount() {
+    appStore.onDidChangeDirty.unregister(this.refreshTree);
+    appStore.onDidChangeChildren.unregister(this.refreshTree);
+  }
+  refreshTree = () => {
+    this.directoryTree.tree.refresh();
   }
   render() {
     const project = this.props.project;
@@ -73,6 +82,7 @@ export class Workspace extends React.Component<WorkspaceProps, {
         >
           <div/>
           <DirectoryTree
+            ref={(ref) => this.directoryTree = ref}
             directory={project}
             value={this.props.file}
             onNewFile={this.props.onNewFile}
@@ -81,12 +91,8 @@ export class Workspace extends React.Component<WorkspaceProps, {
             onDeleteFile={this.props.onDeleteFile}
             onUploadFile={this.props.onUploadFile}
             onMoveFile={this.props.onMoveFile}
-            onClickFile={(file: File) => {
-              this.props.onClickFile(file);
-            }}
-            onDoubleClickFile={(file: File) => {
-              this.props.onDoubleClickFile(file);
-            }}
+            onClickFile={this.props.onClickFile}
+            onDoubleClickFile={this.props.onDoubleClickFile}
             onCreateGist={this.props.onCreateGist}
           />
         </Split>

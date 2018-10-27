@@ -20,11 +20,10 @@
  */
 
 import * as React from "react";
-import { Project, File, Directory, FileType, languageForFileType, IStatusProvider } from "../../model";
+import { languageForFileType, IStatusProvider } from "../../models";
 import { ViewTabs } from "./ViewTabs";
 import { View } from "./View";
-import { build, run, pushStatus, popStatus } from "../../actions/AppActions";
-import "monaco-editor";
+import { build, run, pushStatus, popStatus, logLn } from "../../actions/AppActions";
 
 declare var window: any;
 
@@ -45,7 +44,8 @@ export class Monaco extends React.Component<MonacoProps, {}> {
     super(props);
     this.status = {
       push: pushStatus,
-      pop: popStatus
+      pop: popStatus,
+      logLn: logLn
     };
   }
   revealLastLine() {
@@ -128,7 +128,12 @@ export class Monaco extends React.Component<MonacoProps, {}> {
       run();
     },  null);
 
+    this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.Enter, function() {
+      build().then(run);
+    },  null);
+
   }
+
   private ensureEditor() {
     if (this.editor) { return; }
     const options = Object.assign({
@@ -144,8 +149,38 @@ export class Monaco extends React.Component<MonacoProps, {}> {
       this.container.removeChild(this.container.lastChild);
     }
     this.editor = monaco.editor.create(this.container, options as any);
+    this.editor.onContextMenu(e => {
+      this.resolveMenuPosition(e);
+      this.disableEditorScroll(); // This makes it possible to scroll inside the menu
+    });
+    this.editor.onDidFocusEditorWidget(() => this.enableEditorScroll());
+    this.editor.onDidFocusEditorText(() => this.enableEditorScroll());
     this.registerActions();
     console.info("Created a new Monaco editor.");
+  }
+  resolveMenuPosition(e: any) {
+    const anchorOffset = { x: -10, y: -3 };
+    const menu: HTMLElement = this.container.querySelector(".monaco-editor > .monaco-menu-container");
+    const top = (parseInt(menu.style.top, 10) + e.event.editorPos.y + anchorOffset.y);
+    const left = (parseInt(menu.style.left, 10) + e.event.editorPos.x + anchorOffset.x);
+    const windowPadding = 10;
+    menu.style.top = top + "px";
+    menu.style.left = left  + "px";
+    menu.style.maxHeight = Math.min(window.innerHeight - top - windowPadding, 380) + "px";
+  }
+  disableEditorScroll() {
+    this.editor.updateOptions({
+      scrollbar: {
+        handleMouseWheel: false
+      }
+    });
+  }
+  enableEditorScroll() {
+    this.editor.updateOptions({
+      scrollbar: {
+        handleMouseWheel: true
+      }
+    });
   }
   private setContainer(container: HTMLDivElement) {
     if (container == null) { return; }

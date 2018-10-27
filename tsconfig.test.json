@@ -6,10 +6,13 @@
       "target": "es6",
       "lib": ["dom", "es6"],
       "jsx": "react",
-      "declaration": true
+      "declaration": true,
+      "inlineSourceMap": true,
+      "allowSyntheticDefaultImports": true
   },
   "include": [
-      "./tests/**/*"
+      "./tests/**/*",
+      "node_modules/monaco-editor/monaco.d.ts"
   ],
   "exclude": [
       "./templates/**/*"

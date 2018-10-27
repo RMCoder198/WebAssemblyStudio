@@ -25,12 +25,30 @@ import { View } from "./editor";
 
 declare const Viz: any;
 
+function isVizLoaded() {
+  return typeof Viz !== "undefined";
+}
+
+async function loadViz(): Promise<any> {
+  await Service.lazyLoad("lib/viz-lite.js");
+}
+
 export interface VizViewProps {
   view: View;
 }
 
-const updateThrottleDuration = 500;
-export class VizView extends React.Component<VizViewProps> {
+export class VizView extends React.Component<VizViewProps, {
+  isVizLoaded: boolean;
+  content: string;
+}> {
+  constructor(props: VizViewProps) {
+    super(props);
+    this.state = {
+      isVizLoaded: isVizLoaded(),
+      content: this.props.view.file.buffer.getValue(),
+    };
+  }
+  updateThrottleDuration = 500;
   updateTimeout = 0;
   onDidChangeBuffer = () => {
     if (this.updateTimeout) {
@@ -38,13 +56,17 @@ export class VizView extends React.Component<VizViewProps> {
     }
     this.updateTimeout = window.setTimeout(() => {
       this.updateTimeout = 0;
-      this.forceUpdate();
-    }, updateThrottleDuration);
+      this.setState({
+        content: this.props.view.file.buffer.getValue(),
+      });
+    }, this.updateThrottleDuration);
   }
   async componentWillMount() {
-    if (typeof Viz === "undefined") {
-      await Service.lazyLoad("lib/viz-lite.js");
-      this.forceUpdate();
+    if (!this.state.isVizLoaded) {
+      await loadViz();
+      this.setState({
+        isVizLoaded: isVizLoaded(),
+      });
     }
   }
   componentDidMount() {
@@ -62,11 +84,11 @@ export class VizView extends React.Component<VizViewProps> {
     }
   }
   render() {
-    if (typeof Viz === "undefined") {
+    if (!this.state.isVizLoaded) {
       return <div>Loading GraphViz, please wait ...</div>;
     }
     try {
-      const svg = Viz(this.props.view.file.buffer.getValue());
+      const svg = Viz(this.state.content);
       return <div style={{width: "100%", height: "100%", overflow: "scroll"}} dangerouslySetInnerHTML={{__html: svg}}/>;
     } catch (e) {
       return <div>GraphViz Error</div>;
